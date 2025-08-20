@@ -208,53 +208,84 @@ class StreamlitGPTChatbot:
         
         # Check if this response contains internal reasoning
         reasoning_detected = any(marker in original_response.lower() for marker in 
-                               ['analysis', 'final:', 'answer:', 'assistantfinal', 'let me think', 'i need to analyze'])
+                               ['analysis', 'final:', 'answer:', 'assistantfinal', 'let me think', 'i need to analyze', 
+                                'the user\'s question:', 'provide explanation:', 'provide steps:', 'provide details:'])
         
         if reasoning_detected:
-            # Extract reasoning content before cleaning
-            reasoning_patterns = [
-                r'(analysis.*?assistantfinal)',
-                r'(analysis:.*?(?:final:|answer:|response:))',
-                r'(let me think.*?)(?=\n\n|\.|!|\?|$)',
-                r'(i need to analyze.*?)(?=\n\n|\.|!|\?|$)'
-            ]
-            
-            for pattern in reasoning_patterns:
-                match = re.search(pattern, original_response, re.IGNORECASE | re.DOTALL)
-                if match:
-                    reasoning_content = match.group(1).strip()
-                    break
-            
-            # Pattern 1: Remove "analysis...assistant...final..." patterns
-            analysis_pattern = r'analysis.*?assistantfinal\s*'
-            cleaned_response = re.sub(analysis_pattern, '', cleaned_response, flags=re.DOTALL | re.IGNORECASE)
-            
-            # Pattern 2: Remove "analysis:" followed by reasoning until "final:" or "answer:"
-            analysis_colon_pattern = r'analysis:.*?(?:final:|answer:|response:)\s*'
-            cleaned_response = re.sub(analysis_colon_pattern, '', cleaned_response, flags=re.DOTALL | re.IGNORECASE)
-            
-            # Pattern 3: Remove anything that looks like internal reasoning tags
-            internal_tags = r'<[^>]*thinking[^>]*>.*?</[^>]*thinking[^>]*>'
-            cleaned_response = re.sub(internal_tags, '', cleaned_response, flags=re.DOTALL | re.IGNORECASE)
-            
-            # Pattern 4: Remove "Let me think..." or "I need to analyze..." beginnings
-            thinking_pattern = r'^(Let me think|I need to analyze|Let me analyze|I should consider).*?(?:\.|!|\?)\s*'
-            cleaned_response = re.sub(thinking_pattern, '', cleaned_response, flags=re.IGNORECASE)
-            
-            # Pattern 5: Extract answer after "final" or "answer:" keywords
-            final_answer_patterns = [
-                r'(?:final|answer|response):\s*(.+?)(?:\n|$)',
-                r'(?:final|answer|response)\s+(.+?)(?:\n|$)',
-                r'assistantfinal\s*(.+?)(?:\n|$)'
-            ]
-            
-            for pattern in final_answer_patterns:
-                match = re.search(pattern, cleaned_response, re.IGNORECASE | re.DOTALL)
-                if match:
-                    extracted = match.group(1).strip()
-                    if extracted and len(extracted) > 0:
-                        cleaned_response = extracted
+            # For new structured format, extract everything before the actual answer
+            if 'the user\'s question:' in original_response.lower():
+                # Find the start of the actual answer (after all the "provide" sections)
+                lines = original_response.split('\n')
+                answer_start_idx = -1
+                
+                for i, line in enumerate(lines):
+                    line_lower = line.lower().strip()
+                    # Look for lines that start the actual calculation/answer
+                    if (re.match(r'^\d+\s*[÷/×+\-]\s*\d+', line.strip()) or
+                        'therefore' in line_lower or
+                        'so ' in line_lower and ('=' in line or 'times' in line_lower) or
+                        line.strip().startswith('The answer is') or
+                        line.strip().startswith('Answer:')):
+                        answer_start_idx = i
                         break
+                
+                if answer_start_idx > 0:
+                    # Everything before the answer is reasoning
+                    reasoning_content = '\n'.join(lines[:answer_start_idx]).strip()
+                    # Everything from the answer onwards is the cleaned response
+                    cleaned_response = '\n'.join(lines[answer_start_idx:]).strip()
+                else:
+                    # Fallback: extract the user's question line as reasoning
+                    reasoning_match = re.search(r'(the user\'s question:.*?)(?=\n\n)', original_response, re.IGNORECASE | re.DOTALL)
+                    if reasoning_match:
+                        reasoning_content = reasoning_match.group(1).strip()
+            
+            # Apply other cleaning patterns for older formats
+            else:
+                # Extract reasoning content before cleaning
+                reasoning_patterns = [
+                    r'(analysis.*?assistantfinal)',
+                    r'(analysis:.*?(?:final:|answer:|response:))',
+                    r'(let me think.*?)(?=\n\n|\.|!|\?|$)',
+                    r'(i need to analyze.*?)(?=\n\n|\.|!|\?|$)',
+                ]
+                
+                for pattern in reasoning_patterns:
+                    match = re.search(pattern, original_response, re.IGNORECASE | re.DOTALL)
+                    if match:
+                        reasoning_content = match.group(1).strip()
+                        break
+                
+                # Pattern 1: Remove "analysis...assistant...final..." patterns
+                analysis_pattern = r'analysis.*?assistantfinal\s*'
+                cleaned_response = re.sub(analysis_pattern, '', cleaned_response, flags=re.DOTALL | re.IGNORECASE)
+                
+                # Pattern 2: Remove "analysis:" followed by reasoning until "final:" or "answer:"
+                analysis_colon_pattern = r'analysis:.*?(?:final:|answer:|response:)\s*'
+                cleaned_response = re.sub(analysis_colon_pattern, '', cleaned_response, flags=re.DOTALL | re.IGNORECASE)
+                
+                # Pattern 3: Remove anything that looks like internal reasoning tags
+                internal_tags = r'<[^>]*thinking[^>]*>.*?</[^>]*thinking[^>]*>'
+                cleaned_response = re.sub(internal_tags, '', cleaned_response, flags=re.DOTALL | re.IGNORECASE)
+                
+                # Pattern 4: Remove "Let me think..." or "I need to analyze..." beginnings
+                thinking_pattern = r'^(Let me think|I need to analyze|Let me analyze|I should consider).*?(?:\.|!|\?)\s*'
+                cleaned_response = re.sub(thinking_pattern, '', cleaned_response, flags=re.IGNORECASE)
+                
+                # Pattern 8: Extract answer after "final" or "answer:" keywords
+                final_answer_patterns = [
+                    r'(?:final|answer|response):\s*(.+?)(?:\n|$)',
+                    r'(?:final|answer|response)\s+(.+?)(?:\n|$)',
+                    r'assistantfinal\s*(.+?)(?:\n|$)'
+                ]
+                
+                for pattern in final_answer_patterns:
+                    match = re.search(pattern, cleaned_response, re.IGNORECASE | re.DOTALL)
+                    if match:
+                        extracted = match.group(1).strip()
+                        if extracted and len(extracted) > 0:
+                            cleaned_response = extracted
+                            break
         
         # Clean up whitespace and formatting
         cleaned_response = cleaned_response.strip()
