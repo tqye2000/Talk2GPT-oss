@@ -548,13 +548,6 @@ def main():
         # Conversation management
         st.subheader("📝 Conversation")
         
-        if st.button("🧹 Clear History", use_container_width=True):
-            st.session_state.messages = []
-            # Clear GPU cache after clearing history to free up memory
-            cleanup_gpu_memory()
-            st.success("Conversation history cleared and GPU cache cleaned!")
-            st.rerun()
-        
         if st.button("💾 Export History", use_container_width=True):
             if st.session_state.messages:
                 # Create a text export of the conversation
@@ -623,14 +616,24 @@ def main():
     st.markdown("Welcome to the GPT-OSS chatbot! Ask me anything and I'll do my best to help.")
     
     # Display conversation history
-    chat_container = st.container()
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
     
-    with chat_container:
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
+    # Create bottom section with New Topic button and input
+    st.markdown("---")  # Visual separator
     
-    # Chat input
+    # New Topic button positioned right above the input area
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col2:
+        if st.button("🆕 New Topic", type="secondary", use_container_width=True, key="new_topic_btn"):
+            st.session_state.messages = []
+            # Clear GPU cache after clearing history to free up memory
+            cleanup_gpu_memory()
+            st.success("Started new conversation topic!")
+            st.rerun()
+    
+    # Chat input (Streamlit positions this at the very bottom)
     if prompt := st.chat_input("Type your message here..."):
         # Add user message to chat
         st.session_state.messages.append({"role": "user", "content": prompt})
