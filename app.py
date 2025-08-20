@@ -15,6 +15,7 @@ import sys
 from datetime import datetime
 import time
 import atexit
+from conversation_logger import initialize_conversation_logger, log_conversation_exchange
 
 MODEL_PATH = r"D:\hf_models\gpt-oss-20b"
 
@@ -122,6 +123,9 @@ class StreamlitGPTChatbot:
     
     def get_response(self, conversation_history, user_input):
         """Generate a response from the model."""
+        # Start timing for performance logging
+        start_time = time.time()
+        
         # Prepare the full conversation including the new user input
         messages = conversation_history + [{"role": "user", "content": user_input}]
         
@@ -143,6 +147,9 @@ class StreamlitGPTChatbot:
                     pad_token_id=self.pipe.tokenizer.eos_token_id
                 )
             
+            # Calculate response time
+            response_time_ms = (time.time() - start_time) * 1000
+            
             # Extract the assistant's response
             generated_text = outputs[0]["generated_text"]
             
@@ -163,7 +170,29 @@ class StreamlitGPTChatbot:
                 assistant_response = generated_text
             
             # Clean up the response to remove internal reasoning patterns
-            cleaned_response, reasoning_content = self._clean_response(assistant_response)
+            cleaned_response, reasoning_content, reasoning_detected = self._clean_response(assistant_response)
+            
+            # Log the complete conversation exchange
+            try:
+                model_settings = {
+                    "max_new_tokens": self.max_new_tokens,
+                    "temperature": 0.7,
+                    "top_p": 0.9,
+                    "model_path": self.model_path
+                }
+                
+                log_conversation_exchange(
+                    user_query=user_input,
+                    raw_response=assistant_response,
+                    cleaned_response=cleaned_response,
+                    reasoning_content=reasoning_content,
+                    reasoning_detected=reasoning_detected,
+                    response_time_ms=response_time_ms,
+                    model_settings=model_settings
+                )
+            except Exception as log_error:
+                # Don't let logging errors break the application
+                st.warning(f"⚠️ Logging error: {log_error}")
             
             # Clean up after generation
             if torch.cuda.is_available():
@@ -290,15 +319,62 @@ class StreamlitGPTChatbot:
         # Clean up whitespace and formatting
         cleaned_response = cleaned_response.strip()
         
-        # Remove extra newlines and spaces
-        cleaned_response = re.sub(r'\s+', ' ', cleaned_response)
+        # Process LaTeX and mathematical formatting
+        cleaned_response = self._process_latex_formatting(cleaned_response)
+        
+        # Remove extra newlines and spaces (but preserve line breaks for formatting)
+        cleaned_response = re.sub(r'[ \t]+', ' ', cleaned_response)  # Replace multiple spaces/tabs with single space
+        cleaned_response = re.sub(r'\n\s*\n\s*\n+', '\n\n', cleaned_response)  # Replace multiple newlines with double newline
         
         # If the response is empty or too short after cleaning, provide a fallback
         if not cleaned_response or len(cleaned_response.strip()) < 2:
             cleaned_response = "I apologize, but I couldn't generate a clear response. Could you please rephrase your question?"
             reasoning_content = None
         
-        return cleaned_response, reasoning_content
+        return cleaned_response, reasoning_content, reasoning_detected
+    
+    def _process_latex_formatting(self, text):
+        """Process and clean up LaTeX formatting for Streamlit display."""
+        import re
+        
+        # Convert square bracket LaTeX to dollar sign LaTeX for Streamlit
+        # Pattern: [ formula ] -> $ formula $
+        text = re.sub(r'\[\s*([^[\]]+?)\s*\]', r'$\1$', text)
+        
+        # Handle multi-line LaTeX blocks with \begin{aligned} or similar
+        # Convert \begin{aligned}...\end{aligned} to proper LaTeX format
+        text = re.sub(r'\\\\begin\{aligned\}(.*?)\\\\end\{aligned\}', 
+                     lambda m: f"$$\\begin{{aligned}}{m.group(1)}\\end{{aligned}}$$", 
+                     text, flags=re.DOTALL)
+        
+        # Handle \boxed{} LaTeX command - keep it as LaTeX but make it more visible
+        text = re.sub(r'\\boxed\{([^}]+)\}', r'$\\boxed{\1}$', text)
+        
+        # Clean up common LaTeX formatting issues
+        # Fix escaped characters that don't need escaping in Streamlit
+        latex_fixes = {
+            r'\\qquad': '    ',  # Replace \qquad with spaces
+            r'\\quad': '  ',     # Replace \quad with spaces
+            r'\\dots': '...',    # Replace \dots with ...
+            r'\\,': ' ',         # Replace \, with space
+            r'\\\\ ': ' ',       # Replace \\ with space
+        }
+        
+        for pattern, replacement in latex_fixes.items():
+            text = re.sub(pattern, replacement, text)
+        
+        # Fix math expressions that got broken by spacing fixes
+        # Ensure proper spacing around math expressions
+        text = re.sub(r'(\$[^$]+\$)', r' \1 ', text)  # Add spaces around inline math
+        text = re.sub(r'(\$\$[^$]+\$\$)', r'\n\n\1\n\n', text)  # Add newlines around block math
+        
+        # Clean up excessive spacing
+        text = re.sub(r'  +', ' ', text)  # Multiple spaces to single space
+        text = re.sub(r' +\n', '\n', text)  # Remove trailing spaces before newlines
+        text = re.sub(r'\n +', '\n', text)  # Remove leading spaces after newlines
+        text = re.sub(r'\n\n\n+', '\n\n', text)  # Replace multiple newlines with double newline
+        
+        return text.strip()
 
 def initialize_session_state():
     """Initialize Streamlit session state variables."""
@@ -313,6 +389,12 @@ def initialize_session_state():
         # Clear any cached resources if this is a reload
         if hasattr(load_gpt_model, 'clear'):
             load_gpt_model.clear()
+        
+        # Initialize conversation logger for this session
+        try:
+            initialize_conversation_logger(st.session_state.session_id)
+        except Exception as e:
+            st.warning(f"⚠️ Could not initialize conversation logger: {e}")
     
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -583,8 +665,10 @@ def main():
                 st.session_state.get("show_reasoning", True)):
                 with st.expander("🧠 View Internal Reasoning Process", expanded=False):
                     st.markdown("**Model's thought process:**")
-                    # Format the reasoning content for better readability
+                    # Format the reasoning content for better readability and LaTeX support
                     formatted_reasoning = reasoning_content.replace("analysis", "**Analysis:**").replace("assistantfinal", "\n\n**Final Answer:**")
+                    # Apply LaTeX formatting to reasoning content as well
+                    formatted_reasoning = st.session_state.chatbot._process_latex_formatting(formatted_reasoning)
                     st.markdown(formatted_reasoning)
                     st.caption("This shows how the model arrived at its answer.")
             elif reasoning_content and reasoning_content.strip():
